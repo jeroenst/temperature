@@ -1,55 +1,93 @@
-#!php
+#!/usr/bin/php
 <?php  
+
+
 {
-//  exec ('/usr/domotica/temperature/pcsensor/pcsensor -n2 | /bin/sed "s/.* //;s/C//"',$output) or 
-//  exec ('/usr/domotica/temperature/pcsensor/pcsensor -n2 | /bin/sed "s/.* //;s/C//"',$output) or die ("exec failed") or die ("pcsensor failure");
-  $crcOk = 0;
-  $busError = 0;
-  $retryCounter = 0;
-//  while (!$crcOk or $busError)
-//  {
-//    exec ('grep = /sys/bus/w1/devices/*/w1_slave > /tmp/w1.dat');
-//    exec ('grep t= /tmp/w1.dat | sed "s/.*e1\/.* t/cv/;s/.*30\/.* t/garage/;s/.*60\/.* t/freezer/;s/.*2b\/.* t/hal/;s/.*67\/.* t/aquarium/;s/.*91\/.* t/vijver/;s/.*35\/.* t/buiten/;s/.*4b\/.* t/huiskamer/;s/.*de\/.* t/fridge/" > /tmp/temperature.dat');
-//    exec ('grep NO /tmp/w1.dat', $dummy, $crcOk);
-//    exec ('grep t= /tmp/w1.dat', $dummy, $busError);
-//    if ($retryCounter++ > 2) 
-//    {
-//      echo ("To many retries, application terminated..");
-//      exit(1);
-//    }
-//    if (!$crcOk) echo ("CRC Error Retrying!!!!");
-//    if ($busError) 
-//    {
-//      echo ("Bus Error Retrying!!!!");
-//      sleep (5);
-//    }
-//  }
+  $oneWireAddressArray = array( "garage" => "28-000003e6c130",
+                                "central_heater_water_out" => "28-000003e6bae1",
+                                "freezer" => "28-000003e6ce60",
+                                "outside" => "28-000003ebdc35",
+                                "livingroom" => "28-000003ebe54b",
+                                "fishtank" => "28-000004a81dde",
+                                "hal" => "28-000003e6dc2b",
+                                "outside_pond" => "28-000003ebc691",
+                                "fridge" => "28-000003ebdfde",
+                                "bedroom" => "28-000004a78c8a", 
+                              );
+  $timeout = 60;
+  $cachetimeout = 600;
 
-  $temperatureArray = array();
-  getOneWireTemperature ("28-000003e6bae1", "central_heater_water_out", $temperatureArray);
-  getOneWireTemperature ("28-000003e6ce60", "freezer", $temperatureArray);
-  getOneWireTemperature ("28-000003ebbc67", "fishtank", $temperatureArray);
-  getOneWireTemperature ("28-000003ebdc35", "outside", $temperatureArray);
-  getOneWireTemperature ("28-000003ebe54b", "livingroom", $temperatureArray);
-  getOneWireTemperature ("28-000003e6c130", "garage", $temperatureArray);
-  getOneWireTemperature ("28-000003e6dc2b", "hal", $temperatureArray);
-  getOneWireTemperature ("28-000003ebc691", "outside_pond", $temperatureArray);
-  getOneWireTemperature ("28-000003ebdfde", "fridge", $temperatureArray);  
-  
-  print_r ($temperatureArray);
 
-  $con = mysql_connect("nas","domotica","b-2020");
+  $temperatureArray = array_fill_keys(array_keys($oneWireAddressArray), "null");
+  $temperatureTimeArray = array_fill_keys(array_keys($oneWireAddressArray), 0);
+  $firstRun = 1;
+  $con = 0;
 
-  if (!$con)
-  {
-    die('Could not connect: ' . mysql_error());
-  }
+  while (1)
+  {  
+    // Read all sensors or sleep until timeout has exceeded (except on first run)
+
+    $timeOutTime = time() + $timeout;
+    if ($firstRun) $timeOutTime = time() + 15;
+    $readingFailed = 1;
+    $temperatureOkArray = array_fill_keys(array_keys($oneWireAddressArray), 0);
+    while (($timeOutTime > time()) && $readingFailed)
+    {
+      $readingFailed = 0;
+      // If previous reading failed sleep a while before retrying..
+      foreach ($oneWireAddressArray as $key => $value)
+      {
+        // Get temperature if it's not read ok yet...
+        if ($temperatureOkArray[$key] == 0)
+        {
+          echo ("Reading sensor $key ");
+          $temperature = getOneWireTemperature ($value);
+          if ($temperature != NULL) 
+          {
+            $temperatureArray[$key] = $temperature;
+            $temperatureTimeArray[$key] = time();
+            $temperatureOkArray[$key] = 1;
+          }
+          else
+          {
+            $readingFailed = 1;
+            $temperatureOkArray[$key] = 0;
+            // If reading failed and may not be cached anymore clear it
+            if (($temperatureTimeArray[$key] + $cachetimeout) > time()) $temperatureArray[$key] = "null";
+          }
+        }
+      }
+      if ($readingFailed) sleep (5);
+    }
+
+    // If all sensors are refreshed goto sleep until timeout is finished
+    if (!$firstRun) sleep (max($timeOutTime - time(),0));
+       else $firstRun = 0;
+
+   $temperatureArray["minutetimestamp"] = round (time()/60) * 60;
+    
+    print_r ($temperatureArray);
+
+    $xml = new SimpleXMLElement('<root/>');
+    foreach ($temperatureArray as $key => $value) $xml->addChild($key, $value);
+
+    $dom = dom_import_simplexml($xml)->ownerDocument;
+    $dom->formatOutput = true;
+    file_put_contents('/tmp/temperature.xml', $dom->saveXML());
+
+    if (!$con)
+    {
+      $con = mysql_connect("nas","domotica","b-2020");
+    }
      
-  mysql_select_db("domotica", $con) or die( mysql_error());
+    if ($con) 
+    {
+      mysql_select_db("domotica", $con) or die( mysql_error());
 
-  mysql_query("INSERT INTO temperature (livingroom, hal, outside, fishtank, outside_pond, central_heater_water_out, freezer, garage, fridge)
-   VALUES ($temperatureArray[livingroom], $temperatureArray[hal], $temperatureArray[outside], $temperatureArray[fishtank], $temperatureArray[outside_pond], $temperatureArray[central_heater_water_out], $temperatureArray[freezer], $temperatureArray[garage], $temperatureArray[fridge])") or die( mysql_error());
-
+      mysql_query("INSERT INTO temperature (livingroom, hal, outside, fishtank, outside_pond, central_heater_water_out, freezer, garage, fridge, bedroom)
+       VALUES ($temperatureArray[livingroom], $temperatureArray[hal], $temperatureArray[outside], $temperatureArray[fishtank], $temperatureArray[outside_pond], $temperatureArray[central_heater_water_out], $temperatureArray[freezer], $temperatureArray[garage], $temperatureArray[fridge], $temperatureArray[bedroom])") or die( mysql_error());
+    }
+  }
   mysql_close($con);
 }
 
@@ -62,7 +100,7 @@ function matchdiv($needle, $file, $dividevalue)
       {
         list($key, $val) = explode('=', $line);
         $ret = $key==$needle ? $val/$dividevalue : NULL;
-        if ( $ret ) 
+        if ( $ret )
         {
           echo ($needle."=".$ret."\n");
           break;
@@ -71,50 +109,24 @@ function matchdiv($needle, $file, $dividevalue)
    return $ret;
 }
 
-function getOneWireTemperature ($sensorId, $sensorName = "", &$temperatureArray = NULL)
+function getOneWireTemperature ($sensorId)
 {
-  $nrOfRetries = 3;
-  while ($nrOfRetries-- > 0)
+  if (file_exists ("/sys/bus/w1/devices/".$sensorId."/w1_slave"))
   {
-    if (file_exists ("/sys/bus/w1/devices/".$sensorId."/w1_slave"))
+    $oneWireData = file("/sys/bus/w1/devices/".$sensorId."/w1_slave", FILE_IGNORE_NEW_LINES);
+    if (($oneWireData !== FALSE) and (count($oneWireData) > 1))
     {
-      $oneWireData = file("/sys/bus/w1/devices/".$sensorId."/w1_slave", FILE_IGNORE_NEW_LINES);
-      if (($oneWireData !== FALSE) and (count($oneWireData) > 1))
+      $crcOk = strpos($oneWireData[0], " YES") !== FALSE;
+      if ($crcOk)
       {
-        $crcOk = strpos($oneWireData[0], " YES") !== FALSE;
-        if ($crcOk)
-        {
-          $temperature = explode ("=", $oneWireData[1])[1] / 1000;
-          echo ($sensorName." (".$sensorId.")=".$temperature."\n");
-          if ($temperatureArray !== NULL) $temperatureArray[$sensorName] = $temperature;
-          return $temperature;
-        }
-      }
-      else
-      {
-        if ($nrOfRetries > 0)
-        {
-          // If sensor read failure wait 5 sensor for sensor to come back...
-          echo ("Sensor ".$sensorName." (".$sensorId.") read failure, waiting 5 seconds before retrying...\n");
-          sleep (5);
-          }
-      }
-    }
-    else
-    {
-      if ($nrOfRetries > 0)
-      {
-        // If sensor not found wait 5 sensor for sensor to come back...
-        echo ("Sensor ".$sensorName." (".$sensorId.") not found, waiting 15 seconds before retrying...\n");
-        sleep (15);
+        $temperature = explode ("=", $oneWireData[1])[1] / 1000;
+        echo ("$temperature\n");
+        return $temperature;
       }
     }
   }
-
-  echo ("Error while reading sensor ".$sensorName." (".$sensorId.")\n");
-  if ($temperatureArray !== NULL) $temperatureArray[$sensorName] = "null";
+  echo ("Error\n");
   return NULL;
 }
-
                         
 ?>  
