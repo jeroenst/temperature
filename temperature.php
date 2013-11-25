@@ -17,7 +17,6 @@
   $timeout = 60;
   $cachetimeout = 600;
 
-
   $temperatureArray = array_fill_keys(array_keys($oneWireAddressArray), "null");
   $temperatureTimeArray = array_fill_keys(array_keys($oneWireAddressArray), 0);
   $firstRun = 1;
@@ -31,7 +30,7 @@
     if ($firstRun) $timeOutTime = time() + 15;
     $readingFailed = 1;
     $temperatureOkArray = array_fill_keys(array_keys($oneWireAddressArray), 0);
-    while (($timeOutTime > time()) && $readingFailed)
+    while (($timeOutTime > time()))
     {
       $readingFailed = 0;
       // If previous reading failed sleep a while before retrying..
@@ -46,18 +45,45 @@
           {
             $temperatureArray[$key] = $temperature;
             $temperatureTimeArray[$key] = time();
-            $temperatureOkArray[$key] = 1;
+            echo ("Ok, value is $temperature\n");
+            //$temperatureOkArray[$key] = 1;
           }
           else
           {
             $readingFailed = 1;
             $temperatureOkArray[$key] = 0;
             // If reading failed and may not be cached anymore clear it
-            if (($temperatureTimeArray[$key] + $cachetimeout) > time()) $temperatureArray[$key] = "null";
+            if (($temperatureTimeArray[$key] + $cachetimeout) < time()) 
+            {
+              if ($temperatureTimeArray[$key] > 0)
+              {
+                echo ("FAILED, clearing cached value (cache timeout exceeded)\n");
+              }
+              else
+              {
+                echo ("FAILED, no cached value available\n");
+              }
+              $temperatureArray[$key] = "null";
+            }
+            else
+            {
+              if ($temperatureArray[$key] != "null")
+              {
+                $timeoutleft=($temperatureTimeArray[$key] + $cachetimeout) - time();
+                echo ("FAILED, keeping cached value $temperatureArray[$key] (Timeout in $timeoutleft seconds) \n");
+              }
+              else
+              {
+                echo ("FAILED, no cached value available\n");
+              }
+            }
           }
         }
       }
-      if ($readingFailed) sleep (5);
+//      if ($readingFailed)
+//      {
+       sleep (10);
+//      }
     }
 
     // If all sensors are refreshed goto sleep until timeout is finished
@@ -66,7 +92,8 @@
 
    $temperatureArray["minutetimestamp"] = round (time()/60) * 60;
     
-    print_r ($temperatureArray);
+    // print_r ($temperatureArray);
+    echo "Writing values to database and xml file...\n";
 
     $xml = new SimpleXMLElement('<root/>');
     foreach ($temperatureArray as $key => $value) $xml->addChild($key, $value);
@@ -120,12 +147,12 @@ function getOneWireTemperature ($sensorId)
       if ($crcOk)
       {
         $temperature = explode ("=", $oneWireData[1])[1] / 1000;
-        echo ("$temperature\n");
+  //      echo ("$temperature\n");
         return $temperature;
       }
     }
   }
-  echo ("Error\n");
+//  echo ("Error\n");
   return NULL;
 }
                         
