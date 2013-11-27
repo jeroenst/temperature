@@ -12,7 +12,9 @@
                                 "hal" => "28-000003e6dc2b",
                                 "outside_pond" => "28-000003ebc691",
                                 "fridge" => "28-000003ebdfde",
-                                "bedroom" => "28-000004a78c8a", 
+                                "bedroom" => "28-000004a78c8a",
+                                "bathroom" => "28-000004a84bb8",
+                                "attic" => "28-000004a79671",
                               );
   $timeout = 60;
   $cachetimeout = 600;
@@ -79,16 +81,18 @@
             }
           }
         }
+        // Let bus come to rest
+        sleep (1);
       }
 //      if ($readingFailed)
 //      {
-       sleep (10);
+  //     sleep (20);
 //      }
     }
 
     // If all sensors are refreshed goto sleep until timeout is finished
-    if (!$firstRun) sleep (max($timeOutTime - time(),0));
-       else $firstRun = 0;
+    //if (!$firstRun) sleep (max($timeOutTime - time(),0));
+      // else $firstRun = 0;
 
    $temperatureArray["minutetimestamp"] = round (time()/60) * 60;
     
@@ -111,8 +115,8 @@
     {
       mysql_select_db("domotica", $con) or die( mysql_error());
 
-      mysql_query("INSERT INTO temperature (livingroom, hal, outside, fishtank, outside_pond, central_heater_water_out, freezer, garage, fridge, bedroom)
-       VALUES ($temperatureArray[livingroom], $temperatureArray[hal], $temperatureArray[outside], $temperatureArray[fishtank], $temperatureArray[outside_pond], $temperatureArray[central_heater_water_out], $temperatureArray[freezer], $temperatureArray[garage], $temperatureArray[fridge], $temperatureArray[bedroom])") or die( mysql_error());
+      mysql_query("INSERT INTO temperature (livingroom, hal, outside, fishtank, outside_pond, central_heater_water_out, freezer, garage, fridge, bedroom, bathroom, attic)
+       VALUES ($temperatureArray[livingroom], $temperatureArray[hal], $temperatureArray[outside], $temperatureArray[fishtank], $temperatureArray[outside_pond], $temperatureArray[central_heater_water_out], $temperatureArray[freezer], $temperatureArray[garage], $temperatureArray[fridge], $temperatureArray[bedroom], $temperatureArray[bathroom], $temperatureArray[attic])") or die( mysql_error());
     }
   }
   mysql_close($con);
@@ -138,12 +142,18 @@ function matchdiv($needle, $file, $dividevalue)
 
 function getOneWireTemperature ($sensorId)
 {
+  if (!file_exists ("/sys/bus/w1/devices/".$sensorId."/w1_slave"))
+  {
+       exec ("echo $sensorId > /sys/bus/w1/devices/w1_bus_master1/w1_master_add");
+       sleep (1);
+  }
+
   if (file_exists ("/sys/bus/w1/devices/".$sensorId."/w1_slave"))
   {
     $oneWireData = file("/sys/bus/w1/devices/".$sensorId."/w1_slave", FILE_IGNORE_NEW_LINES);
     if (($oneWireData !== FALSE) and (count($oneWireData) > 1))
     {
-      $crcOk = strpos($oneWireData[0], " YES") !== FALSE;
+      $crcOk = ((strpos($oneWireData[0], " YES")) !== false);
       if ($crcOk)
       {
         $temperature = explode ("=", $oneWireData[1])[1] / 1000;
