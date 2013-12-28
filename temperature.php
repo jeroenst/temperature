@@ -19,6 +19,9 @@
   $timeout = 60;
   $cachetimeout = 600;
 
+  $write_database_timeout = 10; // write database every 10 minutes
+  $write_database_timer = time();
+
   $temperatureArray = array_fill_keys(array_keys($oneWireAddressArray), "null");
   $temperatureTimeArray = array_fill_keys(array_keys($oneWireAddressArray), 0);
   $firstRun = 1;
@@ -45,7 +48,7 @@
           $temperature = getOneWireTemperature ($value);
           if ($temperature != NULL) 
           {
-            $temperatureArray[$key] = $temperature;
+            $temperatureArray[$key] =  sprintf("%01.1f", $temperature);
             $temperatureTimeArray[$key] = time();
             echo ("Ok, value is $temperature\n");
             //$temperatureOkArray[$key] = 1;
@@ -97,29 +100,42 @@
    $temperatureArray["minutetimestamp"] = round (time()/60) * 60;
     
     // print_r ($temperatureArray);
-    echo "Writing values to database and xml file...\n";
+    echo "Writing values to xml file...\n";
 
     $xml = new SimpleXMLElement('<root/>');
-    foreach ($temperatureArray as $key => $value) $xml->addChild($key, $value);
+   foreach ($temperatureArray as $key => $value) if ($value != "null") $xml->addChild($key, $value); else $xml->addChild($key);
 
     $dom = dom_import_simplexml($xml)->ownerDocument;
     $dom->formatOutput = true;
-    file_put_contents('/tmp/temperature.xml', $dom->saveXML());
 
-    if (!$con)
+    // We create new file with content and move it over old one after writing to prevent disturbing readers of old file (http://unix.stackexchange.com/questions/41668/what-happens-when-you-read-a-file-while-it-is-overwritten)
+    file_put_contents('/tmp/temperature.xml.tmp', $dom->saveXML(), LOCK_EX);
+    exec ('mv /tmp/temperature.xml.tmp /tmp/temperature.xml');
+
+    if ($write_database_timer < time() )
     {
-      $con = mysql_connect("nas","domotica","b-2020");
-    }
+      echo "Writing values database...\n";
+      $write_database_timer = time() + ($write_database_timeout * 60);
+
+      $con = mysql_connect("172.20.0.1","domotica","dom8899");
      
-    if ($con) 
-    {
-      mysql_select_db("domotica", $con) or die( mysql_error());
-
-      mysql_query("INSERT INTO temperature (livingroom, hal, outside, fishtank, outside_pond, central_heater_water_out, freezer, garage, fridge, bedroom, bathroom, attic)
-       VALUES ($temperatureArray[livingroom], $temperatureArray[hal], $temperatureArray[outside], $temperatureArray[fishtank], $temperatureArray[outside_pond], $temperatureArray[central_heater_water_out], $temperatureArray[freezer], $temperatureArray[garage], $temperatureArray[fridge], $temperatureArray[bedroom], $temperatureArray[bathroom], $temperatureArray[attic])") or die( mysql_error());
+      if ($con) 
+      {
+        mysql_select_db("domotica", $con) or mysql_close($con);
+      }
+      
+      if ($con)
+      {
+        mysql_query("INSERT INTO temperature (livingroom, hal, outside, fishtank, outside_pond, central_heater_water_out, freezer, garage, fridge, bedroom, bathroom, attic)
+        VALUES ($temperatureArray[livingroom], $temperatureArray[hal], $temperatureArray[outside], $temperatureArray[fishtank], $temperatureArray[outside_pond], $temperatureArray[central_heater_water_out], $temperatureArray[freezer], $temperatureArray[garage], $temperatureArray[fridge], $temperatureArray[bedroom], $temperatureArray[bathroom], $temperatureArray[attic])") or die( mysql_error());
+        mysql_close($con);
+      }
+      else
+      {
+        echo ("Writing to mysql failed...\n");
+      }
     }
   }
-  mysql_close($con);
 }
 
 function matchdiv($needle, $file, $dividevalue)
@@ -142,27 +158,29 @@ function matchdiv($needle, $file, $dividevalue)
 
 function getOneWireTemperature ($sensorId)
 {
-  if (!file_exists ("/sys/bus/w1/devices/".$sensorId."/w1_slave"))
-  {
-       exec ("echo $sensorId > /sys/bus/w1/devices/w1_bus_master1/w1_master_add");
-       sleep (1);
-  }
+  exec ("echo $sensorId > /sys/bus/w1/devices/w1_bus_master1/w1_master_add");
 
-  if (file_exists ("/sys/bus/w1/devices/".$sensorId."/w1_slave"))
+  $retry = 3;
+  
+  while ($retry--)
   {
-    $oneWireData = file("/sys/bus/w1/devices/".$sensorId."/w1_slave", FILE_IGNORE_NEW_LINES);
-    if (($oneWireData !== FALSE) and (count($oneWireData) > 1))
+    if (file_exists ("/sys/bus/w1/devices/".$sensorId."/w1_slave"))
     {
-      $crcOk = ((strpos($oneWireData[0], " YES")) !== false);
-      if ($crcOk)
+      $oneWireData = file("/sys/bus/w1/devices/".$sensorId."/w1_slave", FILE_IGNORE_NEW_LINES);
+      if (($oneWireData !== FALSE) and (count($oneWireData) > 1))
       {
-        $temperature = explode ("=", $oneWireData[1])[1] / 1000;
-  //      echo ("$temperature\n");
-        return $temperature;
+        $crcOk = ((strpos($oneWireData[0], " YES")) !== false);
+        if ($crcOk)
+        {
+          $temperature = explode ("=", $oneWireData[1])[1] / 1000;
+          if (85 == $temperature) return NULL;
+          return round($temperature,1);
+        }
       }
     }
+    sleep (1);
+    echo ("failed, retrying ");
   }
-//  echo ("Error\n");
   return NULL;
 }
                         
